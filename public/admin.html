@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ZenMaid – Admin</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ── Login screen ──────────────────────────────────────────────────────── -->
+<div class="login-page" id="login-screen">
+  <div class="login-card">
+    <div class="logo" style="margin-bottom:28px">
+      <div class="logo-icon">Z</div>
+      ZenMaid Admin
+    </div>
+    <h1>Sign in</h1>
+    <p>Enter your admin password to manage feature requests.</p>
+    <form id="login-form">
+      <div class="form-group">
+        <label for="pw-input">Password</label>
+        <input type="password" id="pw-input" placeholder="Admin password" autofocus>
+      </div>
+      <button type="submit" class="btn btn-primary btn-full" style="margin-top:6px">Sign in</button>
+      <div class="error-msg" id="login-error"></div>
+    </form>
+  </div>
+</div>
+
+<!-- ── Admin screen ──────────────────────────────────────────────────────── -->
+<div id="admin-screen" class="admin-page hidden">
+
+  <header class="header">
+    <div class="header-inner">
+      <a href="/" class="logo">
+        <div class="logo-icon">Z</div>
+        ZenMaid
+      </a>
+      <nav class="header-nav">
+        <a href="/">User view ↗</a>
+        <button id="logout-btn" class="btn btn-sm" style="background:rgba(255,255,255,.15);color:white;border:none">Sign out</button>
+      </nav>
+    </div>
+  </header>
+
+  <div style="max-width:1200px;margin:0 auto;padding:32px 24px 100px;">
+
+    <div class="admin-header">
+      <h1>Feature Requests</h1>
+    </div>
+
+    <!-- Stats -->
+    <div class="stats-bar" id="stats-bar">
+      <div class="stat-card"><div class="stat-label">Total</div><div class="stat-value" id="stat-total">–</div></div>
+      <div class="stat-card"><div class="stat-label">Pending</div><div class="stat-value" id="stat-pending" style="color:var(--pending-clr)">–</div></div>
+      <div class="stat-card"><div class="stat-label">Complete</div><div class="stat-value" id="stat-complete" style="color:var(--complete-clr)">–</div></div>
+      <div class="stat-card"><div class="stat-label">Cannot Do</div><div class="stat-value" id="stat-cannot" style="color:var(--cannot-clr)">–</div></div>
+      <div class="stat-card"><div class="stat-label">Merged</div><div class="stat-value" id="stat-merged" style="color:var(--text-muted)">–</div></div>
+    </div>
+
+    <!-- Toolbar -->
+    <div class="admin-toolbar">
+      <div class="filters" id="admin-filters" style="margin-bottom:0;flex:1">
+        <button class="filter-btn active" data-status="">Active</button>
+        <button class="filter-btn" data-status="Pending">Pending</button>
+        <button class="filter-btn" data-status="Complete">Complete</button>
+        <button class="filter-btn" data-status="Cannot Do">Cannot Do</button>
+        <button class="filter-btn" data-status="__merged__">Merged</button>
+      </div>
+      <input type="text" class="search-box" id="search-box" placeholder="Search requests…">
+    </div>
+
+    <!-- Table -->
+    <div id="requests-table">
+      <div class="loading">Loading…</div>
+    </div>
+
+  </div><!-- /container -->
+</div><!-- /admin-screen -->
+
+<!-- ── Merge bar (sticky bottom) ─────────────────────────────────────────── -->
+<div class="merge-bar hidden" id="merge-bar">
+  <strong id="merge-count">0</strong> requests selected
+  <button class="btn-merge" id="merge-btn">Merge Selected</button>
+  <button class="btn-cancel-sel" id="clear-sel-btn">Clear</button>
+</div>
+
+<!-- ── Merge modal ────────────────────────────────────────────────────────── -->
+<div class="modal-overlay hidden" id="merge-modal">
+  <div class="modal">
+    <h2>Merge Requests</h2>
+    <p>Select which request to <strong>keep</strong>. The others will be merged into it and their votes combined.</p>
+    <div id="merge-options"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" id="cancel-merge-btn">Cancel</button>
+      <button class="btn btn-primary" id="confirm-merge-btn" disabled>Merge</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+  let password = sessionStorage.getItem('zm_admin_pw') || '';
+  let allRequests = [];
+  let selectedIds = new Set();
+  let currentFilter = '';   // '' = active (non-merged), or status, or '__merged__'
+  let searchQuery = '';
+  let keepId = null;
+
+  // ── Boot ─────────────────────────────────────────────────────────────────
+  if (password) showAdmin();
+
+  // ── Login ─────────────────────────────────────────────────────────────────
+  document.getElementById('login-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const pw = document.getElementById('pw-input').value;
+    const res = await fetch('/api/admin/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pw })
+    });
+    if (res.ok) {
+      password = pw;
+      sessionStorage.setItem('zm_admin_pw', pw);
+      showAdmin();
+    } else {
+      document.getElementById('login-error').textContent = 'Incorrect password. Please try again.';
+    }
+  });
+
+  function showAdmin() {
+    document.getElementById('login-screen').classList.add('hidden');
+    document.getElementById('admin-screen').classList.remove('hidden');
+    loadRequests();
+  }
+
+  document.getElementById('logout-btn').addEventListener('click', () => {
+    sessionStorage.removeItem('zm_admin_pw');
+    password = '';
+    document.getElementById('admin-screen').classList.add('hidden');
+    document.getElementById('login-screen').classList.remove('hidden');
+  });
+
+  // ── Load data ─────────────────────────────────────────────────────────────
+  async function loadRequests() {
+    const res = await fetch('/api/admin/requests', {
+      headers: { Authorization: `Bearer ${password}` }
+    });
+    if (res.status === 401) { sessionStorage.removeItem('zm_admin_pw'); location.reload(); return; }
+    allRequests = await res.json();
+    updateStats();
+    renderTable();
+  }
+
+  function updateStats() {
+    const active = allRequests.filter(r => !r.merged_into);
+    document.getElementById('stat-total').textContent   = active.length;
+    document.getElementById('stat-pending').textContent = active.filter(r => r.status === 'Pending').length;
+    document.getElementById('stat-complete').textContent= active.filter(r => r.status === 'Complete').length;
+    document.getElementById('stat-cannot').textContent  = active.filter(r => r.status === 'Cannot Do').length;
+    document.getElementById('stat-merged').textContent  = allRequests.filter(r => r.merged_into).length;
+  }
+
+  function getFiltered() {
+    return allRequests.filter(r => {
+      const isMerged = !!r.merged_into;
+
+      if (currentFilter === '__merged__') { if (!isMerged) return false; }
+      else if (currentFilter)             { if (isMerged || r.status !== currentFilter) return false; }
+      else                                { if (isMerged) return false; }
+
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase();
+        return r.title.toLowerCase().includes(q) ||
+               (r.description || '').toLowerCase().includes(q);
+      }
+      return true;
+    });
+  }
+
+  // ── Render table ──────────────────────────────────────────────────────────
+  function renderTable() {
+    const filtered = getFiltered();
+    const container = document.getElementById('requests-table');
+
+    if (!filtered.length) {
+      container.innerHTML = `<div class="empty-state"><div class="empty-icon">📋</div><p>No requests found.</p></div>`;
+      return;
+    }
+
+    container.innerHTML = `
+      <div class="admin-table">
+        <div class="admin-thead">
+          <div></div>
+          <div>Request</div>
+          <div>Votes</div>
+          <div>Status</div>
+          <div>Actions</div>
+        </div>
+        ${filtered.map(r => renderRow(r)).join('')}
+      </div>`;
+
+    updateMergeBar();
+  }
+
+  function renderRow(r) {
+    const isMerged = !!r.merged_into;
+    const desc = r.description
+      ? r.description.length > 90 ? r.description.slice(0, 90) + '…' : r.description
+      : '';
+
+    const mergedIntoText = isMerged
+      ? `<div class="row-title-sub teal">↪ Merged into: ${esc(r.merged_into_title || 'another request')}</div>`
+      : '';
+
+    const statusCell = isMerged
+      ? `<span class="badge badge-Merged">Merged</span>`
+      : `<select class="status-select" data-id="${r.id}" onchange="changeStatus(${r.id}, this)">
+           <option ${r.status === 'Pending'    ? 'selected' : ''}>Pending</option>
+           <option ${r.status === 'Cannot Do'  ? 'selected' : ''}>Cannot Do</option>
+           <option ${r.status === 'Complete'   ? 'selected' : ''}>Complete</option>
+         </select>`;
+
+    const actionsCell = `
+      ${isMerged ? `<button class="btn btn-secondary btn-sm" onclick="doUnmerge(${r.id})">Unmerge</button>` : ''}
+      <button class="btn btn-danger btn-sm" onclick="doDelete(${r.id})" title="Delete">🗑</button>
+    `;
+
+    return `
+      <div class="admin-row ${isMerged ? 'is-merged' : ''}" data-id="${r.id}">
+        <div>
+          ${!isMerged
+            ? `<input type="checkbox" class="row-cb" data-id="${r.id}"
+                ${selectedIds.has(r.id) ? 'checked' : ''}
+                onchange="toggleSel(${r.id}, this.checked)">`
+            : ''}
+        </div>
+        <div>
+          <div class="row-title-main">${esc(r.title)}</div>
+          ${desc ? `<div class="row-title-sub">${esc(desc)}</div>` : ''}
+          ${mergedIntoText}
+          <div class="row-title-sub">${fmtDate(r.created_at)}</div>
+        </div>
+        <div class="row-votes">${r.vote_count}</div>
+        <div>${statusCell}</div>
+        <div class="row-actions">${actionsCell}</div>
+      </div>`;
+  }
+
+  // ── Status change ─────────────────────────────────────────────────────────
+  window.changeStatus = async function(id, selectEl) {
+    const status = selectEl.value;
+    const res = await fetch(`/api/admin/requests/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${password}` },
+      body: JSON.stringify({ status })
+    });
+    if (res.ok) {
+      const updated = await res.json();
+      const idx = allRequests.findIndex(r => r.id === id);
+      if (idx !== -1) allRequests[idx] = { ...allRequests[idx], ...updated };
+      updateStats();
+      toast('Status updated.');
+    }
+  };
+
+  // ── Delete ────────────────────────────────────────────────────────────────
+  window.doDelete = async function(id) {
+    if (!confirm('Delete this request permanently? This cannot be undone.')) return;
+    const res = await fetch(`/api/admin/requests/${id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${password}` }
+    });
+    if (res.ok) {
+      allRequests = allRequests.filter(r => r.id !== id);
+      selectedIds.delete(id);
+      updateStats();
+      renderTable();
+      toast('Request deleted.');
+    }
+  };
+
+  // ── Unmerge ───────────────────────────────────────────────────────────────
+  window.doUnmerge = async function(id) {
+    const res = await fetch(`/api/admin/requests/${id}/unmerge`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${password}` }
+    });
+    if (res.ok) { await loadRequests(); toast('Request unmerged.'); }
+  };
+
+  // ── Merge selection ───────────────────────────────────────────────────────
+  window.toggleSel = function(id, checked) {
+    checked ? selectedIds.add(id) : selectedIds.delete(id);
+    updateMergeBar();
+  };
+
+  function updateMergeBar() {
+    const bar = document.getElementById('merge-bar');
+    if (selectedIds.size >= 2) {
+      bar.classList.remove('hidden');
+      document.getElementById('merge-count').textContent = selectedIds.size;
+    } else {
+      bar.classList.add('hidden');
+    }
+  }
+
+  document.getElementById('clear-sel-btn').addEventListener('click', () => {
+    selectedIds.clear();
+    document.querySelectorAll('.row-cb').forEach(cb => cb.checked = false);
+    updateMergeBar();
+  });
+
+  // ── Merge modal ───────────────────────────────────────────────────────────
+  document.getElementById('merge-btn').addEventListener('click', () => {
+    const selected = allRequests.filter(r => selectedIds.has(r.id));
+    keepId = null;
+    document.getElementById('confirm-merge-btn').disabled = true;
+
+    document.getElementById('merge-options').innerHTML = selected.map(r => `
+      <div class="merge-option" data-id="${r.id}" onclick="pickKeep(${r.id})">
+        <div class="merge-option-radio" id="radio-${r.id}"></div>
+        <div>
+          <div class="merge-option-title">${esc(r.title)}</div>
+          <div class="merge-option-meta">
+            ${r.vote_count} vote${r.vote_count !== 1 ? 's' : ''} &middot; ${fmtDate(r.created_at)}
+            ${r.description ? `&middot; ${esc(r.description.slice(0, 80))}${r.description.length > 80 ? '…' : ''}` : ''}
+          </div>
+        </div>
+      </div>`).join('');
+
+    document.getElementById('merge-modal').classList.remove('hidden');
+  });
+
+  window.pickKeep = function(id) {
+    keepId = id;
+    document.querySelectorAll('.merge-option').forEach(el => {
+      const isSelected = parseInt(el.dataset.id) === id;
+      el.classList.toggle('selected', isSelected);
+    });
+    document.getElementById('confirm-merge-btn').disabled = false;
+  };
+
+  document.getElementById('cancel-merge-btn').addEventListener('click', closeMergeModal);
+
+  document.getElementById('confirm-merge-btn').addEventListener('click', async () => {
+    if (!keepId) return;
+    const merge_ids = [...selectedIds].filter(id => id !== keepId);
+
+    const res = await fetch('/api/admin/merge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${password}` },
+      body: JSON.stringify({ keep_id: keepId, merge_ids })
+    });
+
+    if (res.ok) {
+      closeMergeModal();
+      selectedIds.clear();
+      keepId = null;
+      await loadRequests();
+      toast(`Merged ${merge_ids.length + 1} requests successfully.`);
+    }
+  });
+
+  function closeMergeModal() {
+    document.getElementById('merge-modal').classList.add('hidden');
+    keepId = null;
+  }
+
+  // ── Filters & search ──────────────────────────────────────────────────────
+  document.getElementById('admin-filters').addEventListener('click', e => {
+    const btn = e.target.closest('.filter-btn');
+    if (!btn) return;
+    document.querySelectorAll('#admin-filters .filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentFilter = btn.dataset.status;
+    renderTable();
+  });
+
+  document.getElementById('search-box').addEventListener('input', e => {
+    searchQuery = e.target.value.trim();
+    renderTable();
+  });
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  function esc(str) {
+    const d = document.createElement('div');
+    d.textContent = str;
+    return d.innerHTML;
+  }
+
+  function fmtDate(s) {
+    return new Date(s).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  }
+
+  function toast(msg) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.classList.add('show');
+    setTimeout(() => el.classList.remove('show'), 3000);
+  }
+})();
+</script>
+</body>
+</html>

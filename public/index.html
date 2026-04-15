@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ZenMaid – Feature Requests</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="header">
+  <div class="header-inner">
+    <a href="/" class="logo">
+      <div class="logo-icon">Z</div>
+      ZenMaid
+    </a>
+    <nav class="header-nav">
+      <a href="/admin.html">Admin</a>
+    </nav>
+  </div>
+</header>
+
+<div class="hero">
+  <div class="hero-inner">
+    <h1>Feature Requests</h1>
+    <p>Share ideas, vote on what matters most, and see what we're working on.</p>
+  </div>
+</div>
+
+<main class="page-main">
+
+  <!-- Sidebar: submit form -->
+  <aside class="submit-section">
+    <h2>Submit an Idea</h2>
+    <div class="card form-card">
+      <form id="submit-form">
+        <div class="form-group">
+          <label for="req-title">Title <span style="color:var(--cannot-clr)">*</span></label>
+          <input type="text" id="req-title" placeholder="Short description of the feature…" required maxlength="200">
+        </div>
+        <div class="form-group">
+          <label for="req-desc">Details</label>
+          <textarea id="req-desc" placeholder="Explain the problem or use case in more detail…"></textarea>
+        </div>
+        <button type="submit" class="btn btn-primary btn-full">Add Suggestion</button>
+      </form>
+    </div>
+
+    <p style="font-size:12px;color:var(--text-muted);margin-top:14px;line-height:1.6;">
+      We review all suggestions regularly. Upvote ideas you'd like to see prioritized.
+    </p>
+  </aside>
+
+  <!-- Main: request list -->
+  <section class="content-section">
+    <div class="filters" id="filters">
+      <button class="filter-btn active" data-status="">All <span class="filter-badge" id="count-all">–</span></button>
+      <button class="filter-btn" data-status="Pending">Pending <span class="filter-badge" id="count-Pending">–</span></button>
+      <button class="filter-btn" data-status="Complete">Complete <span class="filter-badge" id="count-Complete">–</span></button>
+      <button class="filter-btn" data-status="Cannot Do">Cannot Do <span class="filter-badge" id="count-Cannot Do">–</span></button>
+    </div>
+
+    <div id="requests-list">
+      <div class="loading">Loading…</div>
+    </div>
+  </section>
+
+</main>
+
+<div class="toast" id="toast"></div>
+
+<footer class="footer">
+  <strong style="color:var(--teal)">ZenMaid</strong> &nbsp;·&nbsp;
+  Questions? <a href="mailto:support@zenmaid.com">support@zenmaid.com</a>
+</footer>
+
+<script>
+(() => {
+  // ── Voter ID (anonymous, persisted in localStorage) ─────────────────────
+  let voterId = localStorage.getItem('zm_voter_id');
+  if (!voterId) {
+    voterId = 'v_' + crypto.randomUUID();
+    localStorage.setItem('zm_voter_id', voterId);
+  }
+
+  let allRequests = [];
+  let currentStatus = '';
+
+  // ── Fetch & render ───────────────────────────────────────────────────────
+  async function loadRequests() {
+    const qs = new URLSearchParams({ voter_id: voterId });
+    if (currentStatus) qs.set('status', currentStatus);
+
+    const res = await fetch('/api/requests?' + qs);
+    allRequests = await res.json();
+    renderRequests();
+    updateCounts();
+  }
+
+  function renderRequests() {
+    const list = document.getElementById('requests-list');
+
+    if (!allRequests.length) {
+      list.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-icon">💡</div>
+          <p>No feature requests yet.<br>Be the first to suggest one!</p>
+        </div>`;
+      return;
+    }
+
+    list.innerHTML = allRequests.map(r => {
+      const badgeClass = 'badge-' + r.status.replace(/ /g, '');
+      return `
+        <div class="request-card">
+          <button class="vote-btn ${r.has_voted ? 'voted' : ''}"
+                  onclick="toggleVote(${r.id}, this)" aria-label="Upvote">
+            <span class="vote-arrow">▲</span>
+            <span class="vote-count">${r.vote_count}</span>
+          </button>
+          <div class="request-body">
+            <div class="request-title">${esc(r.title)}</div>
+            ${r.description ? `<div class="request-desc">${esc(r.description)}</div>` : ''}
+            <div class="request-meta">
+              <span class="badge ${badgeClass}">${r.status}</span>
+              <span class="req-date">${fmtDate(r.created_at)}</span>
+            </div>
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  async function updateCounts() {
+    // Fetch counts per status for all non-merged
+    const res = await fetch('/api/requests?' + new URLSearchParams({ voter_id: voterId }));
+    const all = await res.json();
+
+    const counts = { Pending: 0, Complete: 0, 'Cannot Do': 0 };
+    all.forEach(r => { if (counts[r.status] !== undefined) counts[r.status]++; });
+
+    document.getElementById('count-all').textContent = all.length;
+    document.getElementById('count-Pending').textContent = counts['Pending'];
+    document.getElementById('count-Complete').textContent = counts['Complete'];
+    document.getElementById('count-Cannot Do').textContent = counts['Cannot Do'];
+  }
+
+  // ── Vote ─────────────────────────────────────────────────────────────────
+  window.toggleVote = async function(id, btn) {
+    const res = await fetch(`/api/requests/${id}/vote`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ voter_id: voterId })
+    });
+    if (!res.ok) return;
+    const { voted, vote_count } = await res.json();
+    btn.querySelector('.vote-count').textContent = vote_count;
+    btn.classList.toggle('voted', voted);
+    // update local
+    const r = allRequests.find(x => x.id === id);
+    if (r) { r.vote_count = vote_count; r.has_voted = voted ? 1 : 0; }
+  };
+
+  // ── Filters ──────────────────────────────────────────────────────────────
+  document.getElementById('filters').addEventListener('click', e => {
+    const btn = e.target.closest('.filter-btn');
+    if (!btn) return;
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentStatus = btn.dataset.status;
+    loadRequests();
+  });
+
+  // ── Submit form ──────────────────────────────────────────────────────────
+  document.getElementById('submit-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const title = document.getElementById('req-title').value.trim();
+    const description = document.getElementById('req-desc').value.trim();
+    if (!title) return;
+
+    const submitBtn = e.target.querySelector('button[type="submit"]');
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Submitting…';
+
+    const res = await fetch('/api/requests', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, description })
+    });
+
+    if (res.ok) {
+      const newReq = await res.json();
+      // Reset filter to All to show new request
+      currentStatus = '';
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      document.querySelector('.filter-btn[data-status=""]').classList.add('active');
+      e.target.reset();
+      await loadRequests();
+      toast('Your suggestion has been submitted — thanks!');
+    }
+
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Add Suggestion';
+  });
+
+  // ── Helpers ──────────────────────────────────────────────────────────────
+  function esc(str) {
+    const d = document.createElement('div');
+    d.textContent = str;
+    return d.innerHTML;
+  }
+
+  function fmtDate(s) {
+    return new Date(s).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  }
+
+  function toast(msg, duration = 3000) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.classList.add('show');
+    setTimeout(() => el.classList.remove('show'), duration);
+  }
+
+  loadRequests();
+})();
+</script>
+</body>
+</html>
